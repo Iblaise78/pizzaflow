@@ -1,5 +1,15 @@
 import nodemailer from 'nodemailer';
 
+function getResendConfig() {
+  const { RESEND_API_KEY, EMAIL_FROM } = process.env;
+  if (!RESEND_API_KEY) return null;
+
+  return {
+    apiKey: RESEND_API_KEY,
+    from: EMAIL_FROM || 'PizzaFlow <onboarding@resend.dev>'
+  };
+}
+
 function getTransporter() {
   const { EMAIL_USER, EMAIL_APP_PASSWORD } = process.env;
   if (!EMAIL_USER || !EMAIL_APP_PASSWORD) {
@@ -12,16 +22,43 @@ function getTransporter() {
   });
 }
 
-export async function sendVerificationCode({ to, code, purpose }) {
+async function deliverEmail({ to, subject, text, html }) {
+  const resend = getResendConfig();
+  if (resend) {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resend.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ from: resend.from, to: [to], subject, text, html })
+    });
+
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.message || 'Resend could not deliver the email.');
+    }
+    return;
+  }
+
   const transporter = getTransporter();
+  await transporter.sendMail({
+    from: `PizzaFlow <${process.env.EMAIL_USER}>`,
+    to,
+    subject,
+    text,
+    html
+  });
+}
+
+export async function sendVerificationCode({ to, code, purpose }) {
   const action = purpose === 'login'
     ? 'sign in to your account'
     : purpose === 'reset-password'
       ? 'reset your PizzaFlow password'
       : 'verify your PizzaFlow account';
 
-  await transporter.sendMail({
-    from: `PizzaFlow <${process.env.EMAIL_USER}>`,
+  await deliverEmail({
     to,
     subject: purpose === 'reset-password' ? 'Your PizzaFlow password reset code' : 'Your PizzaFlow verification code',
     text: `Your PizzaFlow code is ${code}. Use it to ${action}. It expires in 10 minutes.`,
@@ -30,9 +67,7 @@ export async function sendVerificationCode({ to, code, purpose }) {
 }
 
 export async function sendPasswordResetLink({ to, resetUrl }) {
-  const transporter = getTransporter();
-  await transporter.sendMail({
-    from: `PizzaFlow <${process.env.EMAIL_USER}>`,
+  await deliverEmail({
     to,
     subject: 'Reset your PizzaFlow password',
     text: `Use this link to reset your PizzaFlow password: ${resetUrl}. This link expires in 10 minutes.`,
@@ -41,10 +76,8 @@ export async function sendPasswordResetLink({ to, resetUrl }) {
 }
 
 export async function sendLowStockAlert({ to, items }) {
-  const transporter = getTransporter();
   const rows = items.map((item) => `<li><strong>${item.name}</strong>: ${item.stock} remaining (alert at ${item.threshold})</li>`).join('');
-  await transporter.sendMail({
-    from: `PizzaFlow <${process.env.EMAIL_USER}>`,
+  await deliverEmail({
     to,
     subject: `PizzaFlow low-stock alert (${items.length} item${items.length === 1 ? '' : 's'})`,
     text: items.map((item) => `${item.name}: ${item.stock} remaining; alert at ${item.threshold}`).join('\n'),
